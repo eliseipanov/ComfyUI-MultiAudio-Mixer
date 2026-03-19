@@ -1,10 +1,12 @@
 import torch
+import io
+import os
 import numpy as np
 from pydub import AudioSegment
-import io
-import logging
 
-# Налаштування логування для консолі ComfyUI
+import logging
+import folder_paths
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("MultiAudioMixer")
 
@@ -22,9 +24,9 @@ class MultipleAudioUpload:
             inputs["optional"][f"audio_{i}"] = ("AUDIO",)
             inputs["optional"][f"volume_{i}"] = ("FLOAT", {"default": 0.0, "min": -60.0, "max": 20.0, "step": 0.1})
             inputs["optional"][f"balance_{i}"] = ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.01})
-            inputs["optional"][f"start_{i}"] = ("FLOAT", {"default": 0.0, "min": 0.0, "step": 0.01})
-            inputs["optional"][f"stop_{i}"] = ("FLOAT", {"default": 0.0, "min": 0.0, "step": 0.01})
-            inputs["optional"][f"indent_{i}"] = ("FLOAT", {"default": 0.0, "min": 0.0, "step": 0.01})
+            inputs["optional"][f"start_{i}"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10000.0, "step": 0.01})
+            inputs["optional"][f"stop_{i}"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10000.0, "step": 0.01})
+            inputs["optional"][f"indent_{i}"] = ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10000.0, "step": 0.01})
             
         return inputs
 
@@ -33,34 +35,50 @@ class MultipleAudioUpload:
     FUNCTION = "mix_tracks"
     CATEGORY = "AudioMixer"
 
+    @classmethod
+    def IS_CHANGED(s, **kwargs):
+        # Змушує ComfyUI ігнорувати кеш і перераховувати звук при кожному запуску
+        return float("NaN")
+
     def comfy_to_pydub(self, waveform, sample_rate):
         try:
             y = waveform.cpu().numpy()
             if len(y.shape) == 3:
                 y = y[0] 
             
-            y = y.T # Transpose to [samples, channels]
-            y = (y * 32767).astype(np.int16)
+            # Якщо моно [samples], перетворюємо в [samples, 1]
+            if len(y.shape) == 1:
+                y = y.reshape(-1, 1)
+            else:
+                y = y.T # [channels, samples] -> [samples, channels]
+            
+            # Нормалізація та конвертація в 16-bit PCM
+            y = (np.clip(y, -1, 1) * 32767).astype(np.int16)
             return AudioSegment(y.tobytes(), frame_rate=sample_rate, sample_width=2, channels=y.shape[1])
         except Exception as e:
-            logger.error(f"Error converting Comfy audio to Pydub: {e}")
+            logger.error(f"Error in comfy_to_pydub: {e}")
             raise e
 
     def pydub_to_comfy(self, segment):
         try:
             samples = np.array(segment.get_array_of_samples()).astype(np.float32) / 32768.0
-            if segment.channels > 1:
-                samples = samples.reshape((-1, segment.channels)).T
+            channels = segment.channels
             
+            if channels > 1:
+                samples = samples.reshape((-1, channels)).T
+            else:
+                samples = samples.reshape((1, -1))
+            
+            # ВАЖЛИВО: [1, channels, samples] - формат, який розуміє Save Audio
             waveform = torch.from_numpy(samples).unsqueeze(0)
             return {"waveform": waveform, "sample_rate": segment.frame_rate}
         except Exception as e:
-            logger.error(f"Error converting Pydub back to Comfy: {e}")
+            logger.error(f"Error in pydub_to_comfy: {e}")
             raise e
 
     def mix_tracks(self, track_count, **kwargs):
         try:
-            # Створюємо базову тишу (100мс), 44.1kHz стерео за замовчуванням
+            # Створюємо базу (0.1 сек тиші)
             master = AudioSegment.silent(duration=100, frame_rate=44100)
             max_length_ms = 0
 
@@ -69,54 +87,53 @@ class MultipleAudioUpload:
                 if audio is None:
                     continue
                 
-                logger.info(f"Processing track {i}...")
-                
                 try:
-                    waveform = audio['waveform']
-                    sample_rate = audio['sample_rate']
+                    overlay_track = self.comfy_to_pydub(audio['waveform'], audio['sample_rate'])
                     
-                    overlay_track = self.comfy_to_pydub(waveform, sample_rate)
-
                     vol = kwargs.get(f"volume_{i}", 0.0)
                     bal = kwargs.get(f"balance_{i}", 0.0)
-                    start = kwargs.get(f"start_{i}", 0.0)
-                    stop = kwargs.get(f"stop_{i}", 0.0)
-                    indent = kwargs.get(f"indent_{i}", 0.0)
+                    start_sec = kwargs.get(f"start_{i}", 0.0)
+                    stop_sec = kwargs.get(f"stop_{i}", 0.0)
+                    indent_sec = kwargs.get(f"indent_{i}", 0.0)
 
-                    # Crop
-                    if stop > start and stop > 0:
-                        overlay_track = overlay_track[int(start*1000):int(stop*1000)]
-                    elif start > 0:
-                        overlay_track = overlay_track[int(start*1000):]
+                    # 1. Розумна обрізка (Crop)
+                    start_ms = int(start_sec * 1000)
+                    if stop_sec > start_sec:
+                        stop_ms = int(stop_sec * 1000)
+                        overlay_track = overlay_track[start_ms:stop_ms]
+                    else:
+                        # Якщо stop = 0 або менше start — беремо до кінця
+                        overlay_track = overlay_track[start_ms:]
 
-                    # Gain & Pan
-                    overlay_track = overlay_track.apply_gain(vol).pan(bal)
+                    # 2. Ефекти
+                    if vol != 0:
+                        overlay_track = overlay_track.apply_gain(vol)
+                    if bal != 0:
+                        overlay_track = overlay_track.pan(bal)
 
-                    # Overlay
-                    indent_ms = int(indent * 1000)
+                    # 3. Накладання (Overlay)
+                    indent_ms = int(indent_sec * 1000)
                     master = master.overlay(overlay_track, position=indent_ms)
                     
+                    # Рахуємо тривалість
                     current_end = indent_ms + len(overlay_track)
                     if current_end > max_length_ms:
                         max_length_ms = current_end
                         
                 except Exception as track_err:
-                    logger.error(f"Failed to process track {i}: {track_err}")
-                    continue # Пропускаємо битий трек, але йдемо далі
+                    logger.error(f"Error processing track {i}: {track_err}")
+                    continue
 
-            # Фінальна перевірка тривалості
-            if max_length_ms == 0:
-                logger.warning("No audio tracks were processed. Returning silence.")
-                max_length_ms = 1000 
-
+            # Обрізаємо майстер до фінальної довжини звуку
             master = master[:max_length_ms]
+            
+            # Конвертуємо в тензор для ComfyUI
             result_audio = self.pydub_to_comfy(master)
             
-            logger.info(f"Mixing finished. Total duration: {max_length_ms/1000.0}s")
+            logger.info(f"Mixing completed. Final duration: {max_length_ms/1000.0}s")
             return (result_audio, float(max_length_ms / 1000.0))
 
         except Exception as e:
             logger.error(f"Critical error in mix_tracks: {e}")
-            # Повертаємо порожній тензор, щоб не "впав" весь ComfyUI
-            empty_waveform = torch.zeros((1, 1, 44100))
-            return ({"waveform": empty_waveform, "sample_rate": 44100}, 1.0)
+            empty_wf = torch.zeros((1, 1, 44100))
+            return ({"waveform": empty_wf, "sample_rate": 44100}, 0.0)
