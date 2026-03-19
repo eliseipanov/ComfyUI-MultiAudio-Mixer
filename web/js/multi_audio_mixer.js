@@ -1,70 +1,64 @@
 import { app } from "../../../scripts/app.js";
 
 app.registerExtension({
-    name: "ComfyUI.MultiAudioMixer",
-    async beforeRegisterNodeDef(nodeType, nodeData, app) {
+    name: "Comfy.MultiAudioMixer",
+    async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === "MultipleAudioUpload") {
             
-            const onNodeCreated = nodeType.prototype.onNodeCreated;
-            nodeType.prototype.onNodeCreated = function () {
-                const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
-                const self = this;
+            // Кольори для 5 логічних блоків
+            const trackColors = [
+                "rgba(46, 74, 61, 0.5)", // Track 1
+                "rgba(61, 74, 46, 0.5)", // Track 2
+                "rgba(46, 61, 74, 0.5)", // Track 3
+                "rgba(74, 46, 69, 0.5)", // Track 4
+                "rgba(74, 61, 46, 0.5)"  // Track 5
+            ];
 
-                const updateWidgets = () => {
-                    const trackCountWidget = self.widgets.find(w => w.name === "track_count");
-                    const trackCount = trackCountWidget ? trackCountWidget.value : 1;
-                    
-                    self.widgets.forEach(w => {
-                        if (w.name === "track_count") return;
-
-                        const match = w.name.match(/_(\d+)$/);
-                        if (match) {
-                            const trackNum = parseInt(match[1]);
-                            const isVisible = trackNum <= trackCount;
-
-                            if (!isVisible) {
-                                if (w.type !== "hidden") {
-                                    w._original_type = w.type;
-                                    w.type = "hidden";
-                                }
-                            } else {
-                                if (w.type === "hidden") {
-                                    w.type = w._original_type || (w.name.startsWith("audio") ? "combo" : "number");
-                                }
-                            }
-                            
-                            if (w.inputEl) {
-                                w.inputEl.style.display = isVisible ? "" : "none";
-                            }
-                        }
-                    });
-
-                    // Авто-корекція розміру ноди
-                    const size = self.computeSize();
-                    self.setSize([self.size[0], size[1]]);
-                    app.graph.setDirtyCanvas(true, true);
-                };
-
-                // Прив'язка до зміни значення
-                const tcWidget = self.widgets.find(w => w.name === "track_count");
-                if (tcWidget) {
-                    tcWidget.callback = updateWidgets;
-                }
-
-                // Викликаємо декілька разів з різною затримкою для надійності
-                setTimeout(updateWidgets, 1);
-                setTimeout(updateWidgets, 100);
-                
-                return r;
+            nodeType.prototype.onNodeCreated = function() {
+                this.setSize([400, 780]);
             };
 
-            // Додаємо хук для перемальовування після завантаження
-            nodeType.prototype.onAdded = function() {
-                if (this.widgets) {
-                    const trackCountWidget = this.widgets.find(w => w.name === "track_count");
-                    if (trackCountWidget && trackCountWidget.callback) {
-                        trackCountWidget.callback();
-                    }
+            const onDrawForeground = nodeType.prototype.onDrawForeground;
+            nodeType.prototype.onDrawForeground = function(ctx) {
+                onDrawForeground?.apply(this, arguments);
+                if (!this.widgets) return;
+
+                // Кількість віджетів на один трек (Label, Vol, Bal, Start, Stop, Indent)
+                // Примітка: Audio вхід — це не віджет, а слот, тому рахуємо текстові та числові поля
+                const widgetsPerTrack = 6; 
+                
+                for (let i = 0; i < 5; i++) {
+                    const isConnected = this.inputs[i]?.link !== null;
+                    
+                    // Вираховуємо стартовий індекс віджетів для кожного треку
+                    // Перший віджет (index 0) — це track_count, далі йдуть групи
+                    const startIdx = 1 + (i * widgetsPerTrack);
+                    const trackWidgets = this.widgets.slice(startIdx, startIdx + widgetsPerTrack);
+
+                    trackWidgets.forEach((w, idx) => {
+                        if (!w.element && !w.canvas) return;
+
+                        const targetEl = w.element || ctx.canvas; // Для стандартних віджетів Comfy
+
+                        if (isConnected) {
+                            // Активний трек: підсвічуємо фон та ставимо повну яскравість
+                            if (w.element) {
+                                w.element.style.backgroundColor = trackColors[i];
+                                w.element.style.opacity = "1";
+                                w.element.style.borderLeft = "4px solid #00ff00";
+                            }
+                            // Підсвічуємо текст самого лейбла (перший віджет у групі)
+                            if (idx === 0) w.color = "#00ff00"; 
+                        } else {
+                            // Неактивний трек: приглушуємо
+                            if (w.element) {
+                                w.element.style.backgroundColor = "transparent";
+                                w.element.style.opacity = "0.3";
+                                w.element.style.borderLeft = "4px solid transparent";
+                            }
+                            if (idx === 0) w.color = "#666";
+                        }
+                    });
                 }
             };
         }
