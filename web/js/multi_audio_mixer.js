@@ -8,12 +8,13 @@ app.registerExtension({
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
-                
+                const self = this;
+
                 const updateWidgets = () => {
-                    const trackCountWidget = this.widgets.find(w => w.name === "track_count");
+                    const trackCountWidget = self.widgets.find(w => w.name === "track_count");
                     const trackCount = trackCountWidget ? trackCountWidget.value : 1;
                     
-                    this.widgets.forEach(w => {
+                    self.widgets.forEach(w => {
                         if (w.name === "track_count") return;
 
                         const match = w.name.match(/_(\d+)$/);
@@ -22,46 +23,49 @@ app.registerExtension({
                             const isVisible = trackNum <= trackCount;
 
                             if (!isVisible) {
-                                // Ховаємо: зберігаємо старий тип, якщо ще не зберегли
                                 if (w.type !== "hidden") {
                                     w._original_type = w.type;
                                     w.type = "hidden";
                                 }
                             } else {
-                                // Показуємо: повертаємо оригінальний тип
                                 if (w.type === "hidden") {
                                     w.type = w._original_type || (w.name.startsWith("audio") ? "combo" : "number");
                                 }
                             }
                             
-                            // Додатково ховаємо DOM елементи, якщо вони є (важливо для кнопок завантаження)
                             if (w.inputEl) {
                                 w.inputEl.style.display = isVisible ? "" : "none";
                             }
                         }
                     });
 
-                    // Оновлюємо інтерфейс
-                    this.setDirtyCanvas(true, true);
+                    // Авто-корекція розміру ноди
+                    const size = self.computeSize();
+                    self.setSize([self.size[0], size[1]]);
+                    app.graph.setDirtyCanvas(true, true);
                 };
 
-                // Вішаємо обробник на зміну кількості треків
-                const tcWidget = this.widgets.find(w => w.name === "track_count");
+                // Прив'язка до зміни значення
+                const tcWidget = self.widgets.find(w => w.name === "track_count");
                 if (tcWidget) {
-                    tcWidget.callback = () => {
-                        updateWidgets();
-                    };
+                    tcWidget.callback = updateWidgets;
                 }
 
-                // Запуск при створенні з невеликою затримкою
-                setTimeout(() => {
-                    updateWidgets();
-                    if (this.graph) {
-                        this.setSize(this.computeSize());
-                    }
-                }, 50);
-
+                // Викликаємо декілька разів з різною затримкою для надійності
+                setTimeout(updateWidgets, 1);
+                setTimeout(updateWidgets, 100);
+                
                 return r;
+            };
+
+            // Додаємо хук для перемальовування після завантаження
+            nodeType.prototype.onAdded = function() {
+                if (this.widgets) {
+                    const trackCountWidget = this.widgets.find(w => w.name === "track_count");
+                    if (trackCountWidget && trackCountWidget.callback) {
+                        trackCountWidget.callback();
+                    }
+                }
             };
         }
     }
