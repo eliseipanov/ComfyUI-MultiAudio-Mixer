@@ -1,0 +1,10 @@
+[
+  {
+    "author": "eliseipanov",
+    "name": "ComfyUI-MultiAudio-Mixer",
+    "description": "Advanced multi-track audio mixer with volume, balance, and precise timing (indent/duration) for cinematic sound design.",
+    "reference": "https://github.com/eliseipanov/ComfyUI-MultiAudio-Mixer",
+    "category": "Audio",
+    "tags": ["audio", "mixer", "voiceover", "lipsync", "soundtrack"]
+  }
+]
