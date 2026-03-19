@@ -4,53 +4,65 @@ app.registerExtension({
     name: "ComfyUI.MultiAudioMixer",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "MultipleAudioUpload") {
+            
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onNodeCreated ? onNodeCreated.apply(this, arguments) : undefined;
-
-                // Знаходимо віджет вибору кількості треків
-                const trackCountWidget = this.widgets.find((w) => w.name === "track_count");
                 
                 const updateWidgets = () => {
-                    const count = trackCountWidget.value;
+                    const trackCountWidget = this.widgets.find(w => w.name === "track_count");
+                    const trackCount = trackCountWidget ? trackCountWidget.value : 1;
                     
-                    // Проходимо по всіх віджетах ноди
-                    this.widgets.forEach((w) => {
-                        // Ігноруємо сам track_count
+                    this.widgets.forEach(w => {
                         if (w.name === "track_count") return;
 
-                        // Витягуємо номер треку з назви віджета (наприклад, audio_1 -> 1)
-                        const match = w.name.match(/_(\[0-9\]+)$/);
+                        const match = w.name.match(/_(\d+)$/);
                         if (match) {
                             const trackNum = parseInt(match[1]);
-                            // Якщо номер треку більший за вибраний count — ховаємо
-                            if (trackNum > count) {
-                                w.type = "hidden";
-                            } else {
-                                // Повертаємо тип віджета (це трохи "брудний" хак для Comfy, 
-                                // але він працює для динамічного приховування)
-                                if (w.name.startsWith("audio")) w.type = "AUDIO";
-                                if (w.name.startsWith("volume") || w.name.startsWith("balance") || 
-                                    w.name.startsWith("start") || w.name.startsWith("stop") || 
-                                    w.name.startsWith("indent")) {
-                                    w.type = "number";
+                            const isVisible = trackNum <= trackCount;
+
+                            if (!isVisible) {
+                                // Ховаємо: зберігаємо старий тип, якщо ще не зберегли
+                                if (w.type !== "hidden") {
+                                    w._original_type = w.type;
+                                    w.type = "hidden";
                                 }
+                            } else {
+                                // Показуємо: повертаємо оригінальний тип
+                                if (w.type === "hidden") {
+                                    w.type = w._original_type || (w.name.startsWith("audio") ? "combo" : "number");
+                                }
+                            }
+                            
+                            // Додатково ховаємо DOM елементи, якщо вони є (важливо для кнопок завантаження)
+                            if (w.inputEl) {
+                                w.inputEl.style.display = isVisible ? "" : "none";
                             }
                         }
                     });
-                    
-                    // Оновлюємо розмір ноди, щоб не було порожнього місця
-                    this.setSize(this.computeSize());
+
+                    // Оновлюємо інтерфейс
+                    this.setDirtyCanvas(true, true);
                 };
 
-                // Вішаємо колбек на зміну значення
-                trackCountWidget.callback = updateWidgets;
+                // Вішаємо обробник на зміну кількості треків
+                const tcWidget = this.widgets.find(w => w.name === "track_count");
+                if (tcWidget) {
+                    tcWidget.callback = () => {
+                        updateWidgets();
+                    };
+                }
 
-                // Запускаємо один раз при створенні
-                setTimeout(updateWidgets, 10);
+                // Запуск при створенні з невеликою затримкою
+                setTimeout(() => {
+                    updateWidgets();
+                    if (this.graph) {
+                        this.setSize(this.computeSize());
+                    }
+                }, 50);
 
                 return r;
             };
         }
-    },
+    }
 });
